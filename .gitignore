@@ -1,0 +1,11 @@
+
+# secrets
+.env
+web/.env
+
+# dependencies
+node_modules/
+web/node_modules/
+
+# build output
+web/dist/

@@ -1,0 +1,45 @@
+{
+  "samples": [
+    {
+      "lat": 27.971,
+      "lng": -82.541,
+      "dBA": 45.3,
+      "note": "Second-floor lobby pretty quiet",
+      "at": "2025-10-21T21:44:55.349Z"
+    },
+    {
+      "lat": 28.0595967,
+      "lng": -82.4123483,
+      "dBA": 65,
+      "note": "This is just a sample",
+      "at": "2025-10-21T21:57:04.874Z"
+    },
+    {
+      "lat": 28.0595967,
+      "lng": -82.4123483,
+      "dBA": 85,
+      "note": "This is just another sample",
+      "at": "2025-10-21T22:04:32.871Z"
+    },
+    {
+      "lat": 28.0595967,
+      "lng": -82.4123483,
+      "dBA": 115,
+      "note": "This is also another sample",
+      "at": "2025-10-21T22:05:15.459Z"
+    },
+    {
+      "lat": 28.047,
+      "lng": -82.396,
+      "dBA": 20,
+      "note": "Just an evening of friends doing homework",
+      "at": "2025-10-23T01:51:34.261Z"
+    },
+    {
+      "lat": 28.04699129701274,
+      "lng": -82.39620914398195,
+      "dBA": 54.50726587996932,
+      "at": "2026-03-20T03:58:19.943Z"
+    }
+  ]
+}
