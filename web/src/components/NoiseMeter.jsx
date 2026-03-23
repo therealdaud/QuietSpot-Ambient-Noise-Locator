@@ -142,8 +142,8 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     // Ask the Python ML backend to classify the noise source
     if (bands) {
       classifyNoise({ dBA, bands: Array.from(bands) })
-        .then(label => setResult(prev => prev ? { ...prev, sourceType: label } : prev))
-        .catch(() => {});  // classification is non-critical
+        .then(label => setResult(prev => prev ? { ...prev, sourceType: label ?? 'unknown' } : prev))
+        .catch(() => setResult(prev => prev ? { ...prev, sourceType: 'unknown' } : prev));
     }
   }
 
@@ -211,6 +211,8 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
           <div className="nm-source">
             {result.sourceType === null
               ? <span className="nm-source-loading">Classifying…</span>
+              : result.sourceType === 'unknown'
+              ? null
               : <span className="nm-source-label">
                   {SOURCE_ICONS[result.sourceType] ?? '🔊'} {result.sourceType}
                 </span>
