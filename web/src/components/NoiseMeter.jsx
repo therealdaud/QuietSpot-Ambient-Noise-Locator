@@ -43,17 +43,16 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
   const streamRef     = useRef(null);
   const analyserRef   = useRef(null);
   const analyserBuf   = useRef(null);
-  const processorRef  = useRef(null);  // ScriptProcessorNode — collects raw PCM
-  const rawChunksRef  = useRef([]);    // Array of Float32Array chunks
+  const rawChunksRef  = useRef([]);    // Float32Array snapshots from AnalyserNode
   const timerRef      = useRef(null);
   const animRef       = useRef(null);
+  const sampleRateRef = useRef(44100);
 
   useEffect(() => () => stopAll(), []);
 
   function stopAll() {
     clearInterval(timerRef.current);
     cancelAnimationFrame(animRef.current);
-    processorRef.current?.disconnect();
     streamRef.current?.getTracks().forEach(t => t.stop());
     audioCtxRef.current?.close();
   }
@@ -68,38 +67,29 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
       audioCtxRef.current = ctx;
 
       const source = ctx.createMediaStreamSource(stream);
+      sampleRateRef.current = ctx.sampleRate;
 
-      // ── AnalyserNode — drives the live dBA bar only ───────────────────────
+      // ── AnalyserNode — live display AND raw sample collection ─────────────
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       source.connect(analyser);
       analyserRef.current = analyser;
       analyserBuf.current = new Float32Array(analyser.frequencyBinCount);
-
-      // ── ScriptProcessorNode — collects non-overlapping raw PCM chunks ─────
-      // Deprecated but universally supported; AudioWorklet would require
-      // an extra bundler step. Each onaudioprocess fires with 4096 fresh samples.
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      source.connect(processor);
-      processor.connect(ctx.destination); // Must be connected to stay active
       rawChunksRef.current = [];
-
-      processor.onaudioprocess = e => {
-        const data = e.inputBuffer.getChannelData(0);
-        rawChunksRef.current.push(new Float32Array(data));
-      };
-
-      processorRef.current = processor;
 
       // ── Recording state ───────────────────────────────────────────────────
       let secondsLeft = RECORD_SECONDS;
       setCountdown(secondsLeft);
       setPhase('recording');
 
-      // Animate the live dBA bar using quick JS RMS (visual only)
+      // Every animation frame: update live bar AND save a PCM snapshot.
+      // Using the AnalyserNode guarantees real data (ScriptProcessorNode has
+      // cross-browser reliability issues). Consecutive frames overlap ~90%
+      // but the WASM FFT still sees the correct signal energy.
       function animateLive() {
         analyser.getFloatTimeDomainData(analyserBuf.current);
         setLiveDBA(quickRMS(analyserBuf.current));
+        rawChunksRef.current.push(new Float32Array(analyserBuf.current));
         animRef.current = requestAnimationFrame(animateLive);
       }
       animRef.current = requestAnimationFrame(animateLive);
@@ -107,7 +97,7 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
       timerRef.current = setInterval(() => {
         secondsLeft -= 1;
         setCountdown(secondsLeft);
-        if (secondsLeft <= 0) finishRecording(ctx.sampleRate);
+        if (secondsLeft <= 0) finishRecording();
       }, 1000);
 
     } catch {
@@ -115,22 +105,26 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     }
   }
 
-  function finishRecording(sampleRate) {
+  function finishRecording() {
+    // Snapshot the collected chunks before stopAll clears the animation loop
+    const chunks = rawChunksRef.current.slice();
     stopAll();
 
-    // Concatenate all raw PCM chunks into one Float32Array
-    const totalLen = rawChunksRef.current.reduce((s, c) => s + c.length, 0);
+    // Concatenate all AnalyserNode snapshots into one Float32Array
+    const totalLen = chunks.reduce((s, c) => s + c.length, 0);
     const allSamples = new Float32Array(totalLen);
     let offset = 0;
-    for (const chunk of rawChunksRef.current) {
+    for (const chunk of chunks) {
       allSamples.set(chunk, offset);
       offset += chunk.length;
     }
 
+    const sr = sampleRateRef.current;
+
     // Pass the full buffer to the C/WASM engine for accurate analysis
-    const dBA   = processAudio(allSamples, sampleRate);
-    const bands = getOctaveBands(allSamples, sampleRate);
-    const leq   = calculateLeq(allSamples, sampleRate);
+    const dBA   = processAudio(allSamples, sr);
+    const bands = getOctaveBands(allSamples, sr);
+    const leq   = calculateLeq(allSamples, sr);
 
     setResult({ dBA, bands, leq });
     setPhase('done');
