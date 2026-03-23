@@ -44,43 +44,50 @@ from sklearn.preprocessing import LabelEncoder
 _CLASSES: dict[str, dict] = {
     "traffic": {
         # Engine/tyre rumble: heavily low-frequency even after A-weighting.
-        # 63–250 Hz carries ~75% of energy.
-        "power_fractions": [0.32, 0.28, 0.18, 0.10, 0.06, 0.04, 0.01, 0.01],
-        "dba_range": (50, 90),
-        "n_samples": 500,
+        # 63–250 Hz carries ~80% of energy.  low_ratio ≈ 0.81
+        "power_fractions": [0.35, 0.28, 0.18, 0.09, 0.05, 0.03, 0.01, 0.01],
+        "dba_range": (55, 90),
+        "n_samples": 700,
     },
     "voices": {
-        # Speech: strong vowel/consonant energy at 250–1 kHz; harmonics through 3 kHz.
-        # After A-weighting the peak lands at 500 Hz not 1 kHz — corrected from v1.
-        "power_fractions": [0.02, 0.05, 0.16, 0.28, 0.26, 0.14, 0.07, 0.02],
+        # Speech: narrow peak at 500 Hz–2 kHz (vowel formants + consonants).
+        # Phone microphone further attenuates <250 Hz, sharpening the mid peak.
+        # low_ratio ≈ 0.12, mid_ratio ≈ 0.78 — most concentrated of all classes.
+        "power_fractions": [0.01, 0.02, 0.09, 0.27, 0.33, 0.18, 0.08, 0.02],
         "dba_range": (45, 80),
-        "n_samples": 500,
+        "n_samples": 700,
     },
     "construction": {
-        # Drills, hammers, saws: broadband and relatively flat across all bands.
-        "power_fractions": [0.12, 0.14, 0.17, 0.18, 0.16, 0.13, 0.07, 0.03],
-        "dba_range": (65, 100),
-        "n_samples": 500,
+        # Drills, hammers, saws: broadband and relatively flat.
+        # Neither low-dominant nor mid-dominant — occupies the middle of the space.
+        # low_ratio ≈ 0.42, mid_ratio ≈ 0.48
+        "power_fractions": [0.12, 0.14, 0.16, 0.18, 0.17, 0.13, 0.07, 0.03],
+        "dba_range": (70, 105),
+        "n_samples": 700,
     },
     "nature": {
-        # Outdoors mix: wind/rain peaks at 63–250 Hz; birds/insects peak at 4–8 kHz.
-        # Bimodal shape — clearly different from the single mid-peak of voices.
-        "power_fractions": [0.20, 0.22, 0.16, 0.12, 0.08, 0.07, 0.10, 0.05],
-        "dba_range": (20, 60),
-        "n_samples": 500,
+        # Outdoors: wind/rain dominant at 63–250 Hz; birds/insects add a second
+        # hump at 4–8 kHz.  Bimodal shape + LOW overall dBA separates from traffic.
+        # low_ratio ≈ 0.60, high_ratio ≈ 0.15, dBA < 55
+        "power_fractions": [0.24, 0.22, 0.14, 0.09, 0.08, 0.08, 0.10, 0.05],
+        "dba_range": (20, 55),
+        "n_samples": 700,
     },
     "music": {
-        # Full-range playback with bass boost: nearly flat 63 Hz – 4 kHz.
-        # More low-end AND more high-end than voices — distinguishable by ratios.
-        "power_fractions": [0.20, 0.18, 0.16, 0.14, 0.13, 0.10, 0.06, 0.03],
-        "dba_range": (55, 95),
-        "n_samples": 500,
+        # Played through a phone speaker: low-frequency rolloff below ~250 Hz,
+        # broad peak across 500 Hz–4 kHz.  Key difference from voices: more bass
+        # energy (low_ratio ≈ 0.32 vs 0.12) and more sustained high-freq energy.
+        # Key difference from nature: mid-dominant (mid_ratio ≈ 0.59 vs 0.25).
+        "power_fractions": [0.06, 0.10, 0.16, 0.22, 0.23, 0.14, 0.07, 0.02],
+        "dba_range": (55, 92),
+        "n_samples": 700,
     },
     "hvac": {
-        # Mechanical drone: extreme concentration at 63–125 Hz.
-        "power_fractions": [0.44, 0.33, 0.13, 0.06, 0.02, 0.01, 0.01, 0.00],
+        # Mechanical drone: extreme concentration at 63–125 Hz, very steady level.
+        # low_ratio ≈ 0.90 — even more extreme than traffic.
+        "power_fractions": [0.44, 0.34, 0.12, 0.05, 0.02, 0.01, 0.01, 0.00],
         "dba_range": (35, 65),
-        "n_samples": 500,
+        "n_samples": 700,
     },
 }
 
@@ -154,8 +161,8 @@ def _synthesise_dataset(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarra
         dba_vals = rng.uniform(lo, hi, size=n)
 
         for dba in dba_vals:
-            # Band levels + realistic measurement noise
-            noise = rng.normal(0.0, 1.5, size=8)
+            # Band levels + realistic measurement noise (σ=2 dB models phone mic variation)
+            noise = rng.normal(0.0, 2.0, size=8)
             bands = dba + band_offsets + noise
 
             feats = extract_features(bands.tolist(), float(dba))
@@ -229,8 +236,13 @@ def classify_with_confidence(bands: list[float], dba: float) -> dict:
     best_label = str(_le.inverse_transform([best_idx])[0])
     best_prob  = float(probs[best_idx])
 
+    # Below this threshold the model is uncertain — return 'ambient' rather than
+    # a confident-sounding wrong answer.
+    CONFIDENCE_THRESHOLD = 0.42
+    display_label = best_label if best_prob >= CONFIDENCE_THRESHOLD else "ambient"
+
     return {
-        "label":         best_label,
+        "label":         display_label,
         "confidence":    round(best_prob, 3),
         "probabilities": {
             str(_le.inverse_transform([i])[0]): round(float(p), 3)
