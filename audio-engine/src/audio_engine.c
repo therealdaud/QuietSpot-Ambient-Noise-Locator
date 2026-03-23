@@ -3,12 +3,11 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include <string.h>
 
 /* ── Constants ────────────────────────────────────────────────────────────── */
 
-#define MAX_FFT_SIZE     8192
-#define CALIBRATION_dB   90.0
+#define MAX_FFT_SIZE    8192
+#define CALIBRATION_dB  90.0   /* maps Web Audio normalised PCM to realistic dBA */
 
 static const double OCTAVE_CENTERS[8] = {
     63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0
@@ -16,10 +15,7 @@ static const double OCTAVE_CENTERS[8] = {
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
-/*
- * A-weighting amplitude transfer function (IEC 61672-1).
- * Returns linear amplitude ratio (not dB, not power).
- */
+/* A-weighting amplitude transfer function (IEC 61672-1). */
 static double a_weight_amplitude(double f) {
     if (f < 1.0) return 0.0;
     double f2  = f * f;
@@ -32,12 +28,10 @@ static double a_weight_amplitude(double f) {
     return num / den;
 }
 
-/* Hann window — reduces spectral leakage */
 static double hann_window(int i, int N) {
     return 0.5 * (1.0 - cos(2.0 * M_PI * i / (double)(N - 1)));
 }
 
-/* Smallest power of 2 >= n */
 static size_t next_pow2(size_t n) {
     size_t p = 1;
     while (p < n) p <<= 1;
@@ -51,75 +45,111 @@ static float clamp_dba(double v) {
 }
 
 /*
- * Allocate and fill re[]/im[] arrays with windowed samples, run FFT.
- * Returns a flat buffer: [ re[0..N-1] | im[0..N-1] ]
- * Caller must free() the returned pointer.
- * Returns NULL on allocation failure.
+ * Compute RMS of all samples → dBA using the simple time-domain calibration.
+ * This is our anchor: it matches the frontend's original measurement and Leq.
  */
-static double *make_fft(float *samples, int num_samples,
-                        int *n_use_out, size_t *fft_size_out) {
+static double rms_dba(float *samples, int num_samples) {
+    double sum_sq = 0.0;
+    for (int i = 0; i < num_samples; i++)
+        sum_sq += (double)samples[i] * (double)samples[i];
+    double rms = sqrt(sum_sq / (double)num_samples);
+    if (rms < 1e-9) return 20.0;
+    return 20.0 * log10(rms) + CALIBRATION_dB;
+}
+
+/*
+ * Run a Hann-windowed FFT on the LAST n_use samples.
+ * Returns a flat buffer [re[0..N-1] | im[0..N-1]], caller must free().
+ * Sets *fft_size_out to the FFT length used.
+ */
+static double *make_fft(float *samples, int num_samples, size_t *fft_size_out) {
     int    n_use    = (num_samples < MAX_FFT_SIZE) ? num_samples : MAX_FFT_SIZE;
     size_t fft_size = next_pow2((size_t)n_use);
 
-    /* Flat buffer: first half = re, second half = im (zeroed via calloc) */
     double *buf = (double *)calloc(fft_size * 2, sizeof(double));
     if (!buf) return NULL;
 
-    double *re = buf;
-    double *im = buf + fft_size;
+    double *re  = buf;
+    double *im  = buf + fft_size;
 
-    /* Use the LAST n_use samples — the first frames of a recording often
-       contain zeros while the AnalyserNode warms up; the final frames of a
-       5-second recording are guaranteed to have established audio signal. */
+    /* Use the last n_use samples — avoids AnalyserNode warmup zeros
+       that appear in the first few frames of a recording. */
     float *src = samples + (num_samples - n_use);
-    for (int i = 0; i < n_use; i++) {
+    for (int i = 0; i < n_use; i++)
         re[i] = (double)src[i] * hann_window(i, n_use);
-        /* im[i] already 0 from calloc */
-    }
 
     fft(re, im, fft_size);
-
-    *n_use_out    = n_use;
     *fft_size_out = fft_size;
     return buf;
 }
 
-/* Magnitude of bin k from the flat buffer */
-static double bin_mag(const double *buf, size_t k, size_t fft_size) {
-    const double *re = buf;
-    const double *im = buf + fft_size;
-    double r = re[k] / (double)fft_size;
-    double i = im[k] / (double)fft_size;
+/* Magnitude of FFT bin k (normalised by N). */
+static double bin_mag(const double *buf, size_t k, size_t N) {
+    double r = buf[k]     / (double)N;
+    double i = buf[k + N] / (double)N;
     return sqrt(r * r + i * i);
 }
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
+/*
+ * process_audio — A-weighted dBA
+ *
+ * Strategy:
+ *   1. Compute the simple RMS Leq across all samples (correctly calibrated).
+ *   2. Use an FFT to find the A-weighting spectral correction:
+ *        correction_dB = 10 * log10(A-weighted power / unweighted power)
+ *      This ratio is independent of signal level; it only reflects how
+ *      the sound's spectrum interacts with the A-weighting curve.
+ *   3. Return  Leq_dBA + correction_dB.
+ *
+ * This avoids the Hann-window energy loss and FFT normalisation offset
+ * that plagued the earlier direct-FFT approach.
+ */
 float process_audio(float *samples, int num_samples, int sample_rate) {
     if (!samples || num_samples < 2) return 40.0f;
 
-    int    n_use;
-    size_t fft_size;
-    double *buf = make_fft(samples, num_samples, &n_use, &fft_size);
-    if (!buf) return 40.0f;
+    double base_dba = rms_dba(samples, num_samples);
 
+    size_t  fft_size;
+    double *buf = make_fft(samples, num_samples, &fft_size);
+    if (!buf) return clamp_dba(base_dba);
+
+    double freq_res       = (double)sample_rate / (double)fft_size;
+    double total_power    = 0.0;
     double weighted_power = 0.0;
-    double freq_res = (double)sample_rate / (double)fft_size;
 
     for (size_t k = 1; k < fft_size / 2; k++) {
         double f   = (double)k * freq_res;
         double mag = bin_mag(buf, k, fft_size);
+        double p   = mag * mag;
         double aw  = a_weight_amplitude(f);
-        weighted_power += (mag * mag) * (aw * aw);
+        total_power    += p;
+        weighted_power += p * aw * aw;
     }
 
     free(buf);
 
-    if (weighted_power < 1e-20) return 20.0f;
-    return clamp_dba(10.0 * log10(weighted_power) + CALIBRATION_dB);
+    /* A-weighting correction: positive if signal is mid-frequency heavy,
+       negative if dominated by low frequencies. Typically ±5 dB for
+       common noise sources. */
+    double correction = 0.0;
+    if (total_power > 1e-30 && weighted_power > 1e-30)
+        correction = 10.0 * log10(weighted_power / total_power);
+
+    return clamp_dba(base_dba + correction);
 }
 
 
+/*
+ * get_octave_bands — per-band dB levels
+ *
+ * Each band's level is computed as:
+ *   band_dBA = Leq_dBA + 10 * log10(band_fraction_of_total_power)
+ *
+ * This anchors relative spectral energy to the correctly-calibrated Leq,
+ * giving physically meaningful bar heights in the spectrum visualiser.
+ */
 void get_octave_bands(float *samples, int num_samples,
                       int sample_rate, float *octave_bands) {
     if (!samples || !octave_bands || num_samples < 2) {
@@ -127,16 +157,25 @@ void get_octave_bands(float *samples, int num_samples,
         return;
     }
 
-    int    n_use;
-    size_t fft_size;
-    double *buf = make_fft(samples, num_samples, &n_use, &fft_size);
+    double base_dba = rms_dba(samples, num_samples);
+
+    size_t  fft_size;
+    double *buf = make_fft(samples, num_samples, &fft_size);
     if (!buf) {
-        for (int i = 0; i < 8; i++) octave_bands[i] = 0.0f;
+        for (int i = 0; i < 8; i++) octave_bands[i] = (float)base_dba;
         return;
     }
 
-    double freq_res = (double)sample_rate / (double)fft_size;
+    double freq_res   = (double)sample_rate / (double)fft_size;
+    double total_power = 0.0;
 
+    /* First pass: total power across all positive bins. */
+    for (size_t k = 1; k < fft_size / 2; k++) {
+        double mag = bin_mag(buf, k, fft_size);
+        total_power += mag * mag;
+    }
+
+    /* Second pass: per-band power fraction → absolute dBA. */
     for (int b = 0; b < 8; b++) {
         double f_low  = OCTAVE_CENTERS[b] / 1.41421356237;
         double f_high = OCTAVE_CENTERS[b] * 1.41421356237;
@@ -151,24 +190,19 @@ void get_octave_bands(float *samples, int num_samples,
             band_power += mag * mag;
         }
 
-        octave_bands[b] = (band_power < 1e-20)
-            ? 0.0f
-            : clamp_dba(10.0 * log10(band_power) + CALIBRATION_dB);
+        if (total_power < 1e-30 || band_power < 1e-30)
+            octave_bands[b] = 0.0f;
+        else
+            octave_bands[b] = clamp_dba(base_dba + 10.0 * log10(band_power / total_power));
     }
 
     free(buf);
 }
 
 
+/* calculate_leq — simple time-domain energy average (Leq). */
 float calculate_leq(float *samples, int num_samples, int sample_rate) {
     (void)sample_rate;
     if (!samples || num_samples < 1) return 20.0f;
-
-    double sum_sq = 0.0;
-    for (int i = 0; i < num_samples; i++)
-        sum_sq += (double)samples[i] * (double)samples[i];
-
-    double rms = sqrt(sum_sq / (double)num_samples);
-    if (rms < 1e-9) return 20.0f;
-    return clamp_dba(20.0 * log10(rms) + CALIBRATION_dB);
+    return clamp_dba(rms_dba(samples, num_samples));
 }
