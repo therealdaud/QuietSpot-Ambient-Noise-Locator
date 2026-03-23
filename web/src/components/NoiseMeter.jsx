@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import { useAudioEngine } from '../hooks/useAudioEngine';
+import SpectrumView from './SpectrumView';
 
 const RECORD_SECONDS = 5;
 
@@ -16,37 +18,42 @@ function noiseLabel(avg) {
   return 'Very Loud';
 }
 
-function computeRMSdBA(buffer) {
+// Quick per-frame RMS used only for the live display bar during recording.
+// The final dBA submitted to the map always uses the C/WASM engine.
+function quickRMS(buffer) {
   let sum = 0;
   for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
   const rms = Math.sqrt(sum / buffer.length);
   if (rms < 1e-9) return 20;
-  // +90 offset maps raw Web Audio values to a roughly realistic dBA range
-  const dB = 20 * Math.log10(rms) + 90;
-  return Math.max(20, Math.min(120, dB));
+  return Math.max(20, Math.min(120, 20 * Math.log10(rms) + 90));
 }
 
 export default function NoiseMeter({ onComplete, hasLocation }) {
-  const [phase, setPhase]       = useState('idle'); // idle | recording | done
-  const [liveDBA, setLiveDBA]   = useState(null);
+  const [phase, setPhase]         = useState('idle');
+  const [liveDBA, setLiveDBA]     = useState(null);
   const [countdown, setCountdown] = useState(RECORD_SECONDS);
-  const [result, setResult]     = useState(null);
-  const [note, setNote]         = useState('');
-  const [error, setError]       = useState('');
+  const [result, setResult]       = useState(null);   // { dBA, bands, leq }
+  const [note, setNote]           = useState('');
+  const [error, setError]         = useState('');
 
-  const audioCtxRef = useRef(null);
-  const streamRef   = useRef(null);
-  const samplesRef  = useRef([]);
-  const timerRef    = useRef(null);
-  const animRef     = useRef(null);
-  const analyserRef = useRef(null);
-  const bufferRef   = useRef(null);
+  // WASM engine — processAudio / getOctaveBands fall back to JS if not loaded
+  const { processAudio, getOctaveBands, calculateLeq } = useAudioEngine();
+
+  const audioCtxRef   = useRef(null);
+  const streamRef     = useRef(null);
+  const analyserRef   = useRef(null);
+  const analyserBuf   = useRef(null);
+  const processorRef  = useRef(null);  // ScriptProcessorNode — collects raw PCM
+  const rawChunksRef  = useRef([]);    // Array of Float32Array chunks
+  const timerRef      = useRef(null);
+  const animRef       = useRef(null);
 
   useEffect(() => () => stopAll(), []);
 
   function stopAll() {
     clearInterval(timerRef.current);
     cancelAnimationFrame(animRef.current);
+    processorRef.current?.disconnect();
     streamRef.current?.getTracks().forEach(t => t.stop());
     audioCtxRef.current?.close();
   }
@@ -61,30 +68,46 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
       audioCtxRef.current = ctx;
 
       const source = ctx.createMediaStreamSource(stream);
+
+      // ── AnalyserNode — drives the live dBA bar only ───────────────────────
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       source.connect(analyser);
       analyserRef.current = analyser;
-      bufferRef.current = new Float32Array(analyser.frequencyBinCount);
+      analyserBuf.current = new Float32Array(analyser.frequencyBinCount);
 
-      samplesRef.current = [];
+      // ── ScriptProcessorNode — collects non-overlapping raw PCM chunks ─────
+      // Deprecated but universally supported; AudioWorklet would require
+      // an extra bundler step. Each onaudioprocess fires with 4096 fresh samples.
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      source.connect(processor);
+      processor.connect(ctx.destination); // Must be connected to stay active
+      rawChunksRef.current = [];
+
+      processor.onaudioprocess = e => {
+        const data = e.inputBuffer.getChannelData(0);
+        rawChunksRef.current.push(new Float32Array(data));
+      };
+
+      processorRef.current = processor;
+
+      // ── Recording state ───────────────────────────────────────────────────
       let secondsLeft = RECORD_SECONDS;
       setCountdown(secondsLeft);
       setPhase('recording');
 
-      function sample() {
-        analyser.getFloatTimeDomainData(bufferRef.current);
-        const dBA = computeRMSdBA(bufferRef.current);
-        samplesRef.current.push(dBA);
-        setLiveDBA(dBA);
-        animRef.current = requestAnimationFrame(sample);
+      // Animate the live dBA bar using quick JS RMS (visual only)
+      function animateLive() {
+        analyser.getFloatTimeDomainData(analyserBuf.current);
+        setLiveDBA(quickRMS(analyserBuf.current));
+        animRef.current = requestAnimationFrame(animateLive);
       }
-      animRef.current = requestAnimationFrame(sample);
+      animRef.current = requestAnimationFrame(animateLive);
 
       timerRef.current = setInterval(() => {
         secondsLeft -= 1;
         setCountdown(secondsLeft);
-        if (secondsLeft <= 0) finishRecording();
+        if (secondsLeft <= 0) finishRecording(ctx.sampleRate);
       }, 1000);
 
     } catch {
@@ -92,11 +115,24 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     }
   }
 
-  function finishRecording() {
+  function finishRecording(sampleRate) {
     stopAll();
-    const s = samplesRef.current;
-    const avg = s.length ? s.reduce((a, b) => a + b, 0) / s.length : 40;
-    setResult({ dBA: avg });
+
+    // Concatenate all raw PCM chunks into one Float32Array
+    const totalLen = rawChunksRef.current.reduce((s, c) => s + c.length, 0);
+    const allSamples = new Float32Array(totalLen);
+    let offset = 0;
+    for (const chunk of rawChunksRef.current) {
+      allSamples.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Pass the full buffer to the C/WASM engine for accurate analysis
+    const dBA   = processAudio(allSamples, sampleRate);
+    const bands = getOctaveBands(allSamples, sampleRate);
+    const leq   = calculateLeq(allSamples, sampleRate);
+
+    setResult({ dBA, bands, leq });
     setPhase('done');
   }
 
@@ -156,7 +192,14 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
               {result.dBA.toFixed(1)} dBA
             </span>
             <span className="nm-result-label">{noiseLabel(result.dBA)}</span>
+            {result.leq != null && (
+              <span className="nm-result-leq">Leq {result.leq.toFixed(1)} dBA</span>
+            )}
           </div>
+
+          {/* Octave-band spectrum — only visible when WASM is loaded */}
+          <SpectrumView bands={result.bands} />
+
           <input
             className="nm-note"
             placeholder="Add a note (optional, e.g. 'Library 2nd floor')"

@@ -486,3 +486,72 @@ body {
 .spot-samples::-webkit-scrollbar { width: 4px; }
 .spot-samples::-webkit-scrollbar-track { background: transparent; }
 .spot-samples::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 2px; }
+
+/* ─── Spectrum View (C/WASM octave bands) ────────── */
+.spectrum-view {
+  margin: 10px 0 8px;
+  background: #f1f5f9;
+  border-radius: 10px;
+  padding: 10px 12px 8px;
+}
+
+.spectrum-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.spectrum-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 60px;
+}
+
+.spectrum-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  height: 100%;
+}
+
+.spectrum-bar-wrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.spectrum-bar {
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+}
+
+.spectrum-label {
+  font-size: 9px;
+  color: #94a3b8;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+.spectrum-note {
+  font-size: 9px;
+  color: #94a3b8;
+  text-align: right;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* Leq badge in result row */
+.nm-result-leq {
+  font-size: 11px;
+  color: #64748b;
+  margin-left: 8px;
+  font-weight: 500;
+}
