@@ -60,7 +60,13 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
   async function startRecording() {
     setError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation:   false,  // preserve actual room acoustics
+          noiseSuppression:   false,  // don't filter out "noise" — that IS our signal
+          autoGainControl:    false,  // critical: prevents AGC from compressing dynamic range
+        },
+      });
       streamRef.current = stream;
 
       const ctx = new AudioContext();
