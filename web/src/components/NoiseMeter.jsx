@@ -159,7 +159,7 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     if (result) onComplete({
       dBA:      result.dBA,
       note:     note.trim() || undefined,
-      bands:    result.bands    ?? undefined,
+      bands:    result.bands    ? Array.from(result.bands) : undefined,
       centroid: result.centroid ?? undefined,
       variance: result.variance ?? undefined,
       zcr:      result.zcr      ?? undefined,
