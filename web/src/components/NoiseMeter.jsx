@@ -18,15 +18,6 @@ function noiseLabel(avg) {
   return 'Very Loud';
 }
 
-// Quick per-frame RMS used only for the live display bar during recording.
-// The final dBA submitted to the map always uses the C/WASM engine.
-function quickRMS(buffer) {
-  let sum = 0;
-  for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
-  const rms = Math.sqrt(sum / buffer.length);
-  if (rms < 1e-9) return 20;
-  return Math.max(20, Math.min(120, 20 * Math.log10(rms) + 90));
-}
 
 export default function NoiseMeter({ onComplete, hasLocation }) {
   const [phase, setPhase]         = useState('idle');
@@ -94,7 +85,9 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
       // but the WASM FFT still sees the correct signal energy.
       function animateLive() {
         analyser.getFloatTimeDomainData(analyserBuf.current);
-        setLiveDBA(quickRMS(analyserBuf.current));
+        // Use the WASM engine (with A-weighting) so the live bar matches the
+        // final result. Falls back to JS RMS automatically if WASM isn't loaded.
+        setLiveDBA(processAudio(analyserBuf.current, ctx.sampleRate));
         rawChunksRef.current.push(new Float32Array(analyserBuf.current));
         animRef.current = requestAnimationFrame(animateLive);
       }
