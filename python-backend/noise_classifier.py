@@ -234,13 +234,7 @@ def _synthesise_dataset(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarra
 
 # ── Model training ─────────────────────────────────────────────────────────────
 
-def _train() -> tuple[RandomForestClassifier, LabelEncoder]:
-    rng = np.random.default_rng(42)
-    X, y = _synthesise_dataset(rng)
-
-    le = LabelEncoder()
-    y_enc = le.fit_transform(y)
-
+def _build_model(X: np.ndarray, y_enc: np.ndarray) -> RandomForestClassifier:
     clf = RandomForestClassifier(
         n_estimators=200,
         max_depth=None,
@@ -249,11 +243,76 @@ def _train() -> tuple[RandomForestClassifier, LabelEncoder]:
         n_jobs=-1,
     )
     clf.fit(X, y_enc)
-    return clf, le
+    return clf
+
+
+def _train() -> tuple[RandomForestClassifier, LabelEncoder]:
+    rng = np.random.default_rng(42)
+    X, y = _synthesise_dataset(rng)
+
+    le = LabelEncoder()
+    y_enc = le.fit_transform(y)
+    return _build_model(X, y_enc), le
 
 
 # Train once at import time — takes < 1 s, result is cached for the process lifetime
 _clf, _le = _train()
+
+
+def retrain_with_real_data(real_samples: list[dict]) -> int:
+    """
+    Retrain the classifier blending the synthetic baseline with real labeled samples.
+
+    real_samples : list of dicts, each with keys:
+        label    (str)         — user-confirmed noise source
+        dba      (float)       — overall A-weighted level
+        bands    (list|None)   — 8 octave-band dBA values
+        centroid (float|None)  — spectral centroid (Hz)
+        variance (float|None)  — temporal variance (dB²)
+        zcr      (float|None)  — zero-crossing rate (Hz)
+
+    Real samples are replicated 5× so ground-truth data outweighs the
+    synthetic baseline when the real dataset is small.
+
+    Returns the total number of training samples used.
+    """
+    global _clf, _le
+
+    rng = np.random.default_rng(42)
+    X_syn, y_syn = _synthesise_dataset(rng)
+
+    X_real_parts: list[np.ndarray] = []
+    y_real_parts: list[str]        = []
+
+    for s in real_samples:
+        if not s.get("bands") or len(s["bands"]) != 8:
+            continue
+        if s.get("label") not in LABELS:
+            continue
+        feats = extract_features(
+            s["bands"], float(s["dba"]),
+            centroid=s.get("centroid"),
+            variance=s.get("variance"),
+            zcr=s.get("zcr"),
+        )
+        X_real_parts.append(feats[0])
+        y_real_parts.append(s["label"])
+
+    if X_real_parts:
+        # 5× duplication gives real data ~5× more influence than synthetic
+        X_real = np.tile(np.array(X_real_parts), (5, 1))
+        y_real = np.tile(np.array(y_real_parts), 5)
+        X_all  = np.vstack([X_syn, X_real])
+        y_all  = np.concatenate([y_syn, y_real])
+    else:
+        X_all, y_all = X_syn, y_syn
+
+    le    = LabelEncoder()
+    y_enc = le.fit_transform(y_all)
+    _clf  = _build_model(X_all, y_enc)
+    _le   = le
+
+    return len(X_all)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

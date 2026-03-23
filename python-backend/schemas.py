@@ -38,6 +38,26 @@ class NoiseCreate(BaseModel):
         return v
 
 
+VALID_LABELS = {"traffic", "voices", "construction", "nature", "music", "hvac"}
+
+
+class FeedbackCreate(BaseModel):
+    """User correction of a predicted noise label — feeds the retraining loop."""
+    label:    str
+    dba:      float
+    bands:    Optional[list[float]] = None
+    centroid: Optional[float]       = None
+    variance: Optional[float]       = None
+    zcr:      Optional[float]       = None
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        if v not in VALID_LABELS:
+            raise ValueError(f"label must be one of {VALID_LABELS}")
+        return v
+
+
 class SampleOut(BaseModel):
     dBA:         float
     note:        Optional[str]

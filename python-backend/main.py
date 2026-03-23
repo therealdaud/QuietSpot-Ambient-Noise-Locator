@@ -23,15 +23,42 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+import json
+
 from database import Base, engine, get_db
-from models import NoiseReading
-from noise_classifier import classify_with_confidence
-from schemas import NoiseCreate
+from models import LabeledSample, NoiseReading
+from noise_classifier import classify_with_confidence, retrain_with_real_data
+from schemas import FeedbackCreate, NoiseCreate
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="QuietSpot API", version="2.0.0")
+
+
+@app.on_event("startup")
+def retrain_on_startup() -> None:
+    """If real labeled samples exist, retrain the classifier before serving requests."""
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        rows = db.query(LabeledSample).all()
+        if rows:
+            samples = [
+                {
+                    "label":    r.label,
+                    "dba":      r.dba,
+                    "bands":    json.loads(r.bands) if r.bands else None,
+                    "centroid": r.centroid,
+                    "variance": r.variance,
+                    "zcr":      r.zcr,
+                }
+                for r in rows
+            ]
+            n = retrain_with_real_data(samples)
+            print(f"[QuietSpot] Retrained classifier: {len(rows)} real samples → {n} total training rows")
+    finally:
+        db.close()
 
 app.add_middleware(
     CORSMiddleware,
@@ -174,6 +201,75 @@ def classify_noise(payload: NoiseCreate):
         zcr=payload.zcr,
     )
     return {"ok": True, **result}
+
+
+@app.post("/feedback", status_code=201)
+def submit_feedback(payload: FeedbackCreate, db: Session = Depends(get_db)):
+    """
+    Accept a user correction and immediately retrain the classifier.
+
+    The corrected label + acoustic features are stored as a LabeledSample row,
+    then retrain_with_real_data() blends all stored real labels with the
+    synthetic baseline so the improvement takes effect right away.
+    """
+    sample = LabeledSample(
+        label=payload.label,
+        dba=payload.dba,
+        bands=json.dumps(payload.bands) if payload.bands else None,
+        centroid=payload.centroid,
+        variance=payload.variance,
+        zcr=payload.zcr,
+    )
+    db.add(sample)
+    db.commit()
+
+    # Retrain immediately using all accumulated real labels
+    all_rows = db.query(LabeledSample).all()
+    real_samples = [
+        {
+            "label":    r.label,
+            "dba":      r.dba,
+            "bands":    json.loads(r.bands) if r.bands else None,
+            "centroid": r.centroid,
+            "variance": r.variance,
+            "zcr":      r.zcr,
+        }
+        for r in all_rows
+    ]
+    n_total = retrain_with_real_data(real_samples)
+
+    return {"ok": True, "n_real": len(all_rows), "n_total_training": n_total}
+
+
+@app.post("/retrain")
+def manual_retrain(db: Session = Depends(get_db)):
+    """Trigger a manual retrain from all stored labeled samples (admin utility)."""
+    rows = db.query(LabeledSample).all()
+    if not rows:
+        return {"ok": True, "message": "No labeled samples yet — using synthetic baseline"}
+
+    samples = [
+        {
+            "label":    r.label,
+            "dba":      r.dba,
+            "bands":    json.loads(r.bands) if r.bands else None,
+            "centroid": r.centroid,
+            "variance": r.variance,
+            "zcr":      r.zcr,
+        }
+        for r in rows
+    ]
+    n = retrain_with_real_data(samples)
+    return {"ok": True, "n_real": len(rows), "n_total_training": n}
+
+
+@app.get("/feedback/stats")
+def feedback_stats(db: Session = Depends(get_db)):
+    """Return a summary of accumulated labeled samples by class."""
+    from collections import Counter
+    rows = db.query(LabeledSample).all()
+    counts = Counter(r.label for r in rows)
+    return {"ok": True, "total": len(rows), "by_label": dict(counts)}
 
 
 @app.post("/noise", status_code=201)

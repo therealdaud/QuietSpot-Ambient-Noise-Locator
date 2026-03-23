@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAudioEngine } from '../hooks/useAudioEngine';
-import { classifyNoise } from '../api.js';
+import { classifyNoise, postFeedback } from '../api.js';
 import SpectrumView from './SpectrumView';
 
 const RECORD_SECONDS = 5;
@@ -30,12 +30,14 @@ const SOURCE_ICONS = {
 
 
 export default function NoiseMeter({ onComplete, hasLocation }) {
-  const [phase, setPhase]         = useState('idle');
-  const [liveDBA, setLiveDBA]     = useState(null);
-  const [countdown, setCountdown] = useState(RECORD_SECONDS);
-  const [result, setResult]       = useState(null);   // { dBA, bands, leq }
-  const [note, setNote]           = useState('');
-  const [error, setError]         = useState('');
+  const [phase, setPhase]               = useState('idle');
+  const [liveDBA, setLiveDBA]           = useState(null);
+  const [countdown, setCountdown]       = useState(RECORD_SECONDS);
+  const [result, setResult]             = useState(null);
+  const [note, setNote]                 = useState('');
+  const [error, setError]               = useState('');
+  const [correcting, setCorrecting]     = useState(false);   // show correction dropdown
+  const [feedbackDone, setFeedbackDone] = useState(false);   // show "Thanks!" flash
 
   // WASM engine — processAudio / getOctaveBands fall back to JS if not loaded
   const { processAudio, getOctaveBands, calculateLeq,
@@ -140,7 +142,9 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     const zcr      = getZeroCrossingRate(allSamples, sr);   // Hz  (null = no WASM)
 
     // Show result immediately; source type will appear once the backend responds
-    setResult({ dBA, bands, leq, sourceType: null });
+    setCorrecting(false);
+    setFeedbackDone(false);
+    setResult({ dBA, bands, leq, centroid, variance, zcr, sourceType: null });
     setPhase('done');
 
     // Ask the Python ML backend to classify the noise source
@@ -152,8 +156,31 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
   }
 
   function handleSubmit() {
-    if (result) onComplete({ dBA: result.dBA, note: note.trim() || undefined, bands: result.bands ?? undefined });
+    if (result) onComplete({
+      dBA:      result.dBA,
+      note:     note.trim() || undefined,
+      bands:    result.bands    ?? undefined,
+      centroid: result.centroid ?? undefined,
+      variance: result.variance ?? undefined,
+      zcr:      result.zcr      ?? undefined,
+    });
     reset();
+  }
+
+  async function handleCorrection(label) {
+    if (!result || !label) return;
+    setCorrecting(false);
+    postFeedback({
+      label,
+      dba:      result.dBA,
+      bands:    result.bands    ? Array.from(result.bands) : null,
+      centroid: result.centroid ?? null,
+      variance: result.variance ?? null,
+      zcr:      result.zcr      ?? null,
+    }).catch(() => {});   // fire-and-forget; failure is silent
+    setResult(prev => prev ? { ...prev, sourceType: label } : prev);
+    setFeedbackDone(true);
+    setTimeout(() => setFeedbackDone(false), 2500);
   }
 
   function reset() {
@@ -162,6 +189,8 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     setNote('');
     setLiveDBA(null);
     setError('');
+    setCorrecting(false);
+    setFeedbackDone(false);
     setCountdown(RECORD_SECONDS);
   }
 
@@ -213,14 +242,41 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
           </div>
 
           <div className="nm-source">
-            {result.sourceType === null
-              ? <span className="nm-source-loading">Classifying…</span>
-              : result.sourceType === 'unknown'
-              ? null
-              : <span className="nm-source-label">
+            {result.sourceType === null ? (
+              <span className="nm-source-loading">Classifying…</span>
+            ) : result.sourceType === 'unknown' ? null : (
+              <>
+                <span className="nm-source-label">
                   {SOURCE_ICONS[result.sourceType] ?? '🔊'} {result.sourceType}
                 </span>
-            }
+
+                {feedbackDone ? (
+                  <span className="nm-correction-thanks">Thanks! Model updated.</span>
+                ) : correcting ? (
+                  <div className="nm-correction-picker">
+                    <span className="nm-correction-prompt">What was it actually?</span>
+                    <div className="nm-correction-options">
+                      {Object.entries(SOURCE_ICONS).map(([key, icon]) => (
+                        <button
+                          key={key}
+                          className="nm-correction-option"
+                          onClick={() => handleCorrection(key)}
+                        >
+                          {icon} {key}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="nm-correction-cancel" onClick={() => setCorrecting(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button className="nm-correction-trigger" onClick={() => setCorrecting(true)}>
+                    Wrong? Correct it
+                  </button>
+                )}
+              </>
+            )}
           </div>
 
           {/* Octave-band spectrum — only visible when WASM is loaded */}

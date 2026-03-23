@@ -31,13 +31,35 @@ export async function classifyNoise({ dBA, bands, centroid, variance, zcr }) {
   return data.label ?? null;   // e.g. 'traffic', 'voices', 'ambient', null
 }
 
-export async function postNoise({ lat, lng, dBA, note, bands }) {
+export async function postNoise({ lat, lng, dBA, note, bands, centroid, variance, zcr }) {
   const res = await fetch(`${BASE}/noise`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lat, lng, dBA, note, bands: bands ?? null }),
+    body: JSON.stringify({
+      lat, lng, dBA, note,
+      bands:    bands    ?? null,
+      centroid: centroid ?? null,
+      variance: variance ?? null,
+      zcr:      zcr      ?? null,
+    }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'Failed to save reading');
-  return data.saved;   // now includes source_type + confidence
+  return data.saved;   // includes source_type + confidence
+}
+
+export async function postFeedback({ label, dba, bands, centroid, variance, zcr }) {
+  const res = await fetch(`${BASE}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      label, dba,
+      bands:    bands    ?? null,
+      centroid: centroid ?? null,
+      variance: variance ?? null,
+      zcr:      zcr      ?? null,
+    }),
+  });
+  const data = await res.json();
+  return data.ok ?? false;
 }
