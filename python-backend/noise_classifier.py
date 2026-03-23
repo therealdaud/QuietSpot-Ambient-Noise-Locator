@@ -43,34 +43,44 @@ from sklearn.preprocessing import LabelEncoder
 
 _CLASSES: dict[str, dict] = {
     "traffic": {
-        "power_fractions": [0.30, 0.26, 0.20, 0.11, 0.06, 0.04, 0.02, 0.01],
+        # Engine/tyre rumble: heavily low-frequency even after A-weighting.
+        # 63–250 Hz carries ~75% of energy.
+        "power_fractions": [0.32, 0.28, 0.18, 0.10, 0.06, 0.04, 0.01, 0.01],
         "dba_range": (50, 90),
-        "n_samples": 300,
+        "n_samples": 500,
     },
     "voices": {
-        "power_fractions": [0.02, 0.04, 0.12, 0.22, 0.30, 0.20, 0.07, 0.03],
+        # Speech: strong vowel/consonant energy at 250–1 kHz; harmonics through 3 kHz.
+        # After A-weighting the peak lands at 500 Hz not 1 kHz — corrected from v1.
+        "power_fractions": [0.02, 0.05, 0.16, 0.28, 0.26, 0.14, 0.07, 0.02],
         "dba_range": (45, 80),
-        "n_samples": 300,
+        "n_samples": 500,
     },
     "construction": {
-        "power_fractions": [0.15, 0.17, 0.18, 0.17, 0.14, 0.11, 0.06, 0.02],
+        # Drills, hammers, saws: broadband and relatively flat across all bands.
+        "power_fractions": [0.12, 0.14, 0.17, 0.18, 0.16, 0.13, 0.07, 0.03],
         "dba_range": (65, 100),
-        "n_samples": 300,
+        "n_samples": 500,
     },
     "nature": {
-        "power_fractions": [0.08, 0.16, 0.24, 0.22, 0.15, 0.09, 0.04, 0.02],
-        "dba_range": (25, 60),
-        "n_samples": 300,
+        # Outdoors mix: wind/rain peaks at 63–250 Hz; birds/insects peak at 4–8 kHz.
+        # Bimodal shape — clearly different from the single mid-peak of voices.
+        "power_fractions": [0.20, 0.22, 0.16, 0.12, 0.08, 0.07, 0.10, 0.05],
+        "dba_range": (20, 60),
+        "n_samples": 500,
     },
     "music": {
-        "power_fractions": [0.08, 0.10, 0.14, 0.18, 0.22, 0.16, 0.08, 0.04],
+        # Full-range playback with bass boost: nearly flat 63 Hz – 4 kHz.
+        # More low-end AND more high-end than voices — distinguishable by ratios.
+        "power_fractions": [0.20, 0.18, 0.16, 0.14, 0.13, 0.10, 0.06, 0.03],
         "dba_range": (55, 95),
-        "n_samples": 300,
+        "n_samples": 500,
     },
     "hvac": {
-        "power_fractions": [0.28, 0.32, 0.20, 0.10, 0.06, 0.03, 0.01, 0.00],
+        # Mechanical drone: extreme concentration at 63–125 Hz.
+        "power_fractions": [0.44, 0.33, 0.13, 0.06, 0.02, 0.01, 0.01, 0.00],
         "dba_range": (35, 65),
-        "n_samples": 300,
+        "n_samples": 500,
     },
 }
 
@@ -82,22 +92,44 @@ LABELS = list(_CLASSES.keys())
 
 def extract_features(bands: list[float], dba: float) -> np.ndarray:
     """
-    Convert raw octave-band levels + overall dBA into the 9-dim feature vector.
+    Convert raw octave-band levels + overall dBA into the 12-dim feature vector.
 
     bands : list of 8 floats — octave-band dBA levels from the C/WASM engine
     dba   : float            — overall A-weighted level
 
-    Returns a (1, 9) ndarray ready for clf.predict().
+    Feature breakdown (12 total):
+      [0-7]  bands_norm  — normalised band shape, level-invariant
+      [8]    dba_norm    — absolute level cue (e.g. HVAC < 65 dBA)
+      [9]    low_ratio   — fraction of linear power in 63–250 Hz (bands 0-2)
+      [10]   mid_ratio   — fraction of linear power in 500 Hz–2 kHz (bands 3-5)
+      [11]   high_ratio  — fraction of linear power in 4–8 kHz (bands 6-7)
+
+    The ratio features give the classifier a direct measure of spectral tilt that
+    the normalised shape alone cannot represent unambiguously. They are the key
+    separator between e.g. traffic (high low_ratio), voices (high mid_ratio),
+    and nature (bimodal: elevated low_ratio AND high_ratio).
+
+    Returns a (1, 12) ndarray ready for clf.predict().
     """
     b = np.array(bands, dtype=float)
 
-    # Normalise band shape to [0, 1] — makes level-invariant
+    # Normalised band shape [0, 1]
     lo, hi = b.min(), b.max()
     bands_norm = (b - lo) / (hi - lo + 1e-6)
 
+    # Absolute level cue
     dba_norm = np.clip((dba - 20.0) / 100.0, 0.0, 1.0)
 
-    return np.concatenate([bands_norm, [dba_norm]]).reshape(1, -1)
+    # Convert dB back to linear power for ratio calculation
+    linear = 10.0 ** (b / 10.0)
+    total  = linear.sum() + 1e-30
+    low_ratio  = linear[0:3].sum() / total   # 63, 125, 250 Hz
+    mid_ratio  = linear[3:6].sum() / total   # 500, 1k, 2k Hz
+    high_ratio = linear[6:8].sum() / total   # 4k, 8k Hz
+
+    return np.concatenate([
+        bands_norm, [dba_norm, low_ratio, mid_ratio, high_ratio]
+    ]).reshape(1, -1)
 
 
 # ── Synthetic training data ────────────────────────────────────────────────────
