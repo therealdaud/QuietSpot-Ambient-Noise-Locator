@@ -68,8 +68,12 @@ static double *make_fft(float *samples, int num_samples,
     double *re = buf;
     double *im = buf + fft_size;
 
+    /* Use the LAST n_use samples — the first frames of a recording often
+       contain zeros while the AnalyserNode warms up; the final frames of a
+       5-second recording are guaranteed to have established audio signal. */
+    float *src = samples + (num_samples - n_use);
     for (int i = 0; i < n_use; i++) {
-        re[i] = (double)samples[i] * hann_window(i, n_use);
+        re[i] = (double)src[i] * hann_window(i, n_use);
         /* im[i] already 0 from calloc */
     }
 
