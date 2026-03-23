@@ -16,5 +16,6 @@ class NoiseReading(Base):
     lng         = Column(Float,   nullable=False)
     dba         = Column(Float,   nullable=False)
     note        = Column(String,  nullable=True)
+    source_type = Column(String,  nullable=True)   # ML-classified noise source
     recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     cell_key    = Column(String,  index=True)   # precomputed ~11m grid cell

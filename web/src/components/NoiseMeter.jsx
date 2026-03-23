@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAudioEngine } from '../hooks/useAudioEngine';
+import { classifyNoise } from '../api.js';
 import SpectrumView from './SpectrumView';
 
 const RECORD_SECONDS = 5;
@@ -17,6 +18,15 @@ function noiseLabel(avg) {
   if (avg < 80) return 'Loud';
   return 'Very Loud';
 }
+
+const SOURCE_ICONS = {
+  traffic:      '🚗',
+  voices:       '🗣️',
+  construction: '🏗️',
+  nature:       '🌿',
+  music:        '🎵',
+  hvac:         '❄️',
+};
 
 
 export default function NoiseMeter({ onComplete, hasLocation }) {
@@ -125,12 +135,20 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     const bands = getOctaveBands(allSamples, sr);
     const leq   = calculateLeq(allSamples, sr);
 
-    setResult({ dBA, bands, leq });
+    // Show result immediately; source type will appear once the backend responds
+    setResult({ dBA, bands, leq, sourceType: null });
     setPhase('done');
+
+    // Ask the Python ML backend to classify the noise source
+    if (bands) {
+      classifyNoise({ dBA, bands: Array.from(bands) })
+        .then(label => setResult(prev => prev ? { ...prev, sourceType: label } : prev))
+        .catch(() => {});  // classification is non-critical
+    }
   }
 
   function handleSubmit() {
-    if (result) onComplete({ dBA: result.dBA, note: note.trim() || undefined });
+    if (result) onComplete({ dBA: result.dBA, note: note.trim() || undefined, bands: result.bands ?? undefined });
     reset();
   }
 
@@ -188,6 +206,15 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
             {result.leq != null && (
               <span className="nm-result-leq">Leq {result.leq.toFixed(1)} dBA</span>
             )}
+          </div>
+
+          <div className="nm-source">
+            {result.sourceType === null
+              ? <span className="nm-source-loading">Classifying…</span>
+              : <span className="nm-source-label">
+                  {SOURCE_ICONS[result.sourceType] ?? '🔊'} {result.sourceType}
+                </span>
+            }
           </div>
 
           {/* Octave-band spectrum — only visible when WASM is loaded */}

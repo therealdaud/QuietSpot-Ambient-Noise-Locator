@@ -15,13 +15,23 @@ export async function fetchSpot(key) {
   return data.spot;
 }
 
-export async function postNoise({ lat, lng, dBA, note }) {
+export async function classifyNoise({ dBA, bands }) {
+  const res = await fetch(`${BASE}/classify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat: 0, lng: 0, dBA, bands: bands ?? null }),
+  });
+  const data = await res.json();
+  return data.label ?? null;   // e.g. 'traffic', 'voices', null if unavailable
+}
+
+export async function postNoise({ lat, lng, dBA, note, bands }) {
   const res = await fetch(`${BASE}/noise`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lat, lng, dBA, note }),
+    body: JSON.stringify({ lat, lng, dBA, note, bands: bands ?? null }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'Failed to save reading');
-  return data.saved;
+  return data.saved;   // now includes source_type + confidence
 }

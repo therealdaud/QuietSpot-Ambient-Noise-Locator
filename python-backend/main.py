@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from models import NoiseReading
+from noise_classifier import classify_with_confidence
 from schemas import NoiseCreate
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -146,9 +147,10 @@ def get_spot(
             "n":       len(readings),
             "samples": [
                 {
-                    "dBA":  r.dba,
-                    "note": r.note,
-                    "at":   r.recorded_at.isoformat() + "Z",
+                    "dBA":         r.dba,
+                    "note":        r.note,
+                    "source_type": r.source_type,
+                    "at":          r.recorded_at.isoformat() + "Z",
                 }
                 for r in readings
             ],
@@ -156,16 +158,37 @@ def get_spot(
     }
 
 
+@app.post("/classify")
+def classify_noise(payload: NoiseCreate):
+    """
+    Classify a noise recording without saving it.
+    Used by the frontend to show the predicted source type in the result panel
+    before the user decides to save or discard.
+    """
+    if not payload.bands or len(payload.bands) != 8:
+        return {"ok": True, "label": None, "confidence": 0.0, "probabilities": {}}
+    result = classify_with_confidence(payload.bands, payload.dBA)
+    return {"ok": True, **result}
+
+
 @app.post("/noise", status_code=201)
 def post_noise(payload: NoiseCreate, db: Session = Depends(get_db)):
     ck   = cell_key(payload.lat, payload.lng)
     note = payload.note.strip() if payload.note and payload.note.strip() else None
+
+    # ML classification — requires octave bands from the WASM engine
+    classification = (
+        classify_with_confidence(payload.bands, payload.dBA)
+        if payload.bands and len(payload.bands) == 8
+        else {"label": None, "confidence": 0.0, "probabilities": {}}
+    )
 
     reading = NoiseReading(
         lat=payload.lat,
         lng=payload.lng,
         dba=payload.dBA,
         note=note,
+        source_type=classification["label"],
         cell_key=ck,
         recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
@@ -176,10 +199,12 @@ def post_noise(payload: NoiseCreate, db: Session = Depends(get_db)):
     return {
         "ok": True,
         "saved": {
-            "lat":  reading.lat,
-            "lng":  reading.lng,
-            "dBA":  reading.dba,
-            "note": reading.note,
+            "lat":         reading.lat,
+            "lng":         reading.lng,
+            "dBA":         reading.dba,
+            "note":        reading.note,
+            "source_type": reading.source_type,
+            "confidence":  classification["confidence"],
         },
     }
 

@@ -99,14 +99,15 @@ export default function App() {
     }
   }
 
-  async function handleRecordingComplete({ dBA, note }) {
+  async function handleRecordingComplete({ dBA, note, bands }) {
     if (!userLocation) {
       showToast('Location not available. Please allow GPS access.', 'error');
       return;
     }
     try {
-      await postNoise({ ...userLocation, dBA, note });
-      showToast(`✓ Saved! ${dBA.toFixed(1)} dBA recorded.`, 'info');
+      const saved = await postNoise({ ...userLocation, dBA, note, bands });
+      const src   = saved.source_type ? ` · ${saved.source_type}` : '';
+      showToast(`✓ Saved! ${dBA.toFixed(1)} dBA${src}`, 'info');
       loadSpots(timeFilter === 'all' ? null : timeFilter);
     } catch (e) {
       showToast('Failed to save: ' + e.message, 'error');

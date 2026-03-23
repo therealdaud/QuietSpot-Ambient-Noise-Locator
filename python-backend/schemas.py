@@ -7,10 +7,11 @@ from pydantic import BaseModel, field_validator
 
 
 class NoiseCreate(BaseModel):
-    lat:  float
-    lng:  float
-    dBA:  float
-    note: Optional[str] = None
+    lat:   float
+    lng:   float
+    dBA:   float
+    note:  Optional[str]        = None
+    bands: Optional[list[float]] = None   # 8 octave-band levels from WASM
 
     @field_validator("dBA")
     @classmethod
@@ -35,9 +36,10 @@ class NoiseCreate(BaseModel):
 
 
 class SampleOut(BaseModel):
-    dBA:  float
-    note: Optional[str]
-    at:   str
+    dBA:         float
+    note:        Optional[str]
+    source_type: Optional[str]
+    at:          str
 
 
 class SpotSummary(BaseModel):

@@ -555,3 +555,28 @@ body {
   margin-left: 8px;
   font-weight: 500;
 }
+
+/* ML source-type pill */
+.nm-source {
+  text-align: center;
+  margin: 6px 0 2px;
+}
+
+.nm-source-label {
+  display: inline-block;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 99px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  text-transform: capitalize;
+  letter-spacing: 0.02em;
+}
+
+.nm-source-loading {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+}
