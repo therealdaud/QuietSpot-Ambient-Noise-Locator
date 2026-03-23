@@ -38,7 +38,8 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
   const [error, setError]         = useState('');
 
   // WASM engine — processAudio / getOctaveBands fall back to JS if not loaded
-  const { processAudio, getOctaveBands, calculateLeq } = useAudioEngine();
+  const { processAudio, getOctaveBands, calculateLeq,
+          getSpectralCentroid, getTemporalVariance, getZeroCrossingRate } = useAudioEngine();
 
   const audioCtxRef   = useRef(null);
   const streamRef     = useRef(null);
@@ -131,9 +132,12 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
     const sr = sampleRateRef.current;
 
     // Pass the full buffer to the C/WASM engine for accurate analysis
-    const dBA   = processAudio(allSamples, sr);
-    const bands = getOctaveBands(allSamples, sr);
-    const leq   = calculateLeq(allSamples, sr);
+    const dBA      = processAudio(allSamples, sr);
+    const bands    = getOctaveBands(allSamples, sr);
+    const leq      = calculateLeq(allSamples, sr);
+    const centroid = getSpectralCentroid(allSamples, sr);   // Hz  (null = no WASM)
+    const variance = getTemporalVariance(allSamples, sr);   // dB² (null = no WASM)
+    const zcr      = getZeroCrossingRate(allSamples, sr);   // Hz  (null = no WASM)
 
     // Show result immediately; source type will appear once the backend responds
     setResult({ dBA, bands, leq, sourceType: null });
@@ -141,7 +145,7 @@ export default function NoiseMeter({ onComplete, hasLocation }) {
 
     // Ask the Python ML backend to classify the noise source
     if (bands) {
-      classifyNoise({ dBA, bands: Array.from(bands) })
+      classifyNoise({ dBA, bands: Array.from(bands), centroid, variance, zcr })
         .then(label => setResult(prev => prev ? { ...prev, sourceType: label ?? 'unknown' } : prev))
         .catch(() => setResult(prev => prev ? { ...prev, sourceType: 'unknown' } : prev));
     }

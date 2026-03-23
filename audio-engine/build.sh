@@ -39,7 +39,7 @@ mkdir -p "$OUTPUT_DIR"
 emcc src/audio_engine.c src/fft.c \
     -O3 \
     -s WASM=1 \
-    -s EXPORTED_FUNCTIONS='["_process_audio","_get_octave_bands","_calculate_leq","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_process_audio","_get_octave_bands","_calculate_leq","_get_spectral_centroid","_get_temporal_variance","_get_zero_crossing_rate","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPF32"]' \
     -s MODULARIZE=1 \
     -s EXPORT_NAME="AudioEngine" \

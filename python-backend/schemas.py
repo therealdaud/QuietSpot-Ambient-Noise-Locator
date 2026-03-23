@@ -7,11 +7,14 @@ from pydantic import BaseModel, field_validator
 
 
 class NoiseCreate(BaseModel):
-    lat:   float
-    lng:   float
-    dBA:   float
-    note:  Optional[str]        = None
-    bands: Optional[list[float]] = None   # 8 octave-band levels from WASM
+    lat:      float
+    lng:      float
+    dBA:      float
+    note:     Optional[str]         = None
+    bands:    Optional[list[float]] = None   # 8 octave-band levels from WASM
+    centroid: Optional[float]       = None   # spectral centroid (Hz)
+    variance: Optional[float]       = None   # temporal variance (dB²)
+    zcr:      Optional[float]       = None   # zero-crossing rate (Hz)
 
     @field_validator("dBA")
     @classmethod

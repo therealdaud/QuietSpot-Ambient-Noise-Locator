@@ -97,5 +97,46 @@ export function useAudioEngine() {
     return leq;
   }
 
-  return { processAudio, getOctaveBands, calculateLeq };
+  // ── getSpectralCentroid ──────────────────────────────────────────────────────
+  // Frequency centre of mass (Hz). Low = bass-heavy, high = treble-heavy.
+  // Returns null if WASM isn't loaded.
+  function getSpectralCentroid(samples, sampleRate) {
+    const mod = modRef.current;
+    if (!mod) return null;
+
+    const ptr      = writeF32(mod, samples);
+    const centroid = mod._get_spectral_centroid(ptr, samples.length, sampleRate);
+    mod._free(ptr);
+    return centroid;
+  }
+
+  // ── getTemporalVariance ──────────────────────────────────────────────────────
+  // Variance of per-chunk RMS dBA across 20 time segments (dB²).
+  // Near-zero = steady; high = intermittent / impulsive.
+  // Returns null if WASM isn't loaded.
+  function getTemporalVariance(samples, sampleRate) {
+    const mod = modRef.current;
+    if (!mod) return null;
+
+    const ptr      = writeF32(mod, samples);
+    const variance = mod._get_temporal_variance(ptr, samples.length, sampleRate);
+    mod._free(ptr);
+    return variance;
+  }
+
+  // ── getZeroCrossingRate ──────────────────────────────────────────────────────
+  // Zero crossings per second (Hz). Low = tonal, high = noisy/broadband.
+  // Returns null if WASM isn't loaded.
+  function getZeroCrossingRate(samples, sampleRate) {
+    const mod = modRef.current;
+    if (!mod) return null;
+
+    const ptr = writeF32(mod, samples);
+    const zcr = mod._get_zero_crossing_rate(ptr, samples.length, sampleRate);
+    mod._free(ptr);
+    return zcr;
+  }
+
+  return { processAudio, getOctaveBands, calculateLeq,
+           getSpectralCentroid, getTemporalVariance, getZeroCrossingRate };
 }

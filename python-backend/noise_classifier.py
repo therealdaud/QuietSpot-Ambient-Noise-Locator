@@ -44,49 +44,65 @@ from sklearn.preprocessing import LabelEncoder
 _CLASSES: dict[str, dict] = {
     "traffic": {
         # Engine/tyre rumble: heavily low-frequency even after A-weighting.
-        # 63–250 Hz carries ~80% of energy.  low_ratio ≈ 0.81
+        # low_ratio ≈ 0.81 | centroid 200–500 Hz | low variance | moderate ZCR
         "power_fractions": [0.35, 0.28, 0.18, 0.09, 0.05, 0.03, 0.01, 0.01],
-        "dba_range": (55, 90),
+        "dba_range":      (55, 90),
+        "centroid_range": (200, 500),    # bass-heavy spectrum
+        "variance_range": (2, 15),       # fairly continuous, low variation
+        "zcr_range":      (1500, 4000),  # broadband but not noisy
         "n_samples": 700,
     },
     "voices": {
-        # Speech: narrow peak at 500 Hz–2 kHz (vowel formants + consonants).
-        # Phone microphone further attenuates <250 Hz, sharpening the mid peak.
-        # low_ratio ≈ 0.12, mid_ratio ≈ 0.78 — most concentrated of all classes.
+        # Speech: narrow peak at 500 Hz–2 kHz. Phone mic sharpens the mid peak.
+        # low_ratio ≈ 0.12, mid_ratio ≈ 0.78 | centroid 800–2500 Hz | high variance
         "power_fractions": [0.01, 0.02, 0.09, 0.27, 0.33, 0.18, 0.08, 0.02],
-        "dba_range": (45, 80),
+        "dba_range":      (45, 80),
+        "centroid_range": (800, 2500),   # mid-range dominant
+        "variance_range": (15, 50),      # speech starts/stops naturally
+        "zcr_range":      (3000, 7000),  # sibilants and consonants raise ZCR
         "n_samples": 700,
     },
     "construction": {
-        # Drills, hammers, saws: broadband and relatively flat.
-        # Neither low-dominant nor mid-dominant — occupies the middle of the space.
-        # low_ratio ≈ 0.42, mid_ratio ≈ 0.48
+        # Drills, hammers, saws: flat spectrum + very high temporal variance.
+        # low_ratio ≈ 0.42 | impulsive → highest variance of all classes
         "power_fractions": [0.12, 0.14, 0.16, 0.18, 0.17, 0.13, 0.07, 0.03],
-        "dba_range": (70, 105),
+        "dba_range":      (70, 105),
+        "centroid_range": (500, 1500),   # broadband, centroid in mid range
+        "variance_range": (25, 70),      # highly impulsive, biggest variance
+        "zcr_range":      (5000, 10000), # saw blades / drills → very high ZCR
         "n_samples": 700,
     },
     "nature": {
-        # Outdoors: wind/rain dominant at 63–250 Hz; birds/insects add a second
-        # hump at 4–8 kHz.  Bimodal shape + LOW overall dBA separates from traffic.
-        # low_ratio ≈ 0.60, high_ratio ≈ 0.15, dBA < 55
+        # Outdoors: wind/rain at low freqs + birds/insects at 4–8 kHz.
+        # Bimodal + LOW dBA + moderate variance separates from traffic.
+        # low_ratio ≈ 0.60, high_ratio ≈ 0.15
         "power_fractions": [0.24, 0.22, 0.14, 0.09, 0.08, 0.08, 0.10, 0.05],
-        "dba_range": (20, 55),
+        "dba_range":      (20, 55),
+        "centroid_range": (300, 1000),   # bimodal pulls centroid to low-mid
+        "variance_range": (5, 30),       # wind gusts + intermittent birds
+        "zcr_range":      (2000, 5500),  # moderate — wind is broadband
         "n_samples": 700,
     },
     "music": {
-        # Played through a phone speaker: low-frequency rolloff below ~250 Hz,
-        # broad peak across 500 Hz–4 kHz.  Key difference from voices: more bass
-        # energy (low_ratio ≈ 0.32 vs 0.12) and more sustained high-freq energy.
-        # Key difference from nature: mid-dominant (mid_ratio ≈ 0.59 vs 0.25).
+        # Phone speaker playback: weak bass (<250 Hz), broad peak 500 Hz–4 kHz.
+        # Key split from voices: more bass (low_ratio 0.32 vs 0.12).
+        # Key split from nature: mid-dominant (mid_ratio 0.59 vs 0.25).
+        # Key split from construction: low variance (music is continuous).
         "power_fractions": [0.06, 0.10, 0.16, 0.22, 0.23, 0.14, 0.07, 0.02],
-        "dba_range": (55, 92),
+        "dba_range":      (55, 92),
+        "centroid_range": (600, 2000),   # broad, peaks around 1 kHz
+        "variance_range": (5, 20),       # rhythmic but fairly steady
+        "zcr_range":      (2500, 6000),  # moderate — melodic content
         "n_samples": 700,
     },
     "hvac": {
-        # Mechanical drone: extreme concentration at 63–125 Hz, very steady level.
-        # low_ratio ≈ 0.90 — even more extreme than traffic.
+        # Mechanical drone: extreme concentration at 63–125 Hz.
+        # low_ratio ≈ 0.90 | near-zero variance | very low ZCR (pure hum)
         "power_fractions": [0.44, 0.34, 0.12, 0.05, 0.02, 0.01, 0.01, 0.00],
-        "dba_range": (35, 65),
+        "dba_range":      (35, 65),
+        "centroid_range": (80, 300),     # pure low-freq drone
+        "variance_range": (0.5, 4),      # extremely steady
+        "zcr_range":      (300, 1500),   # tonal hum → very low ZCR
         "n_samples": 700,
     },
 }
@@ -97,26 +113,34 @@ LABELS = list(_CLASSES.keys())
 
 # ── Feature extraction ─────────────────────────────────────────────────────────
 
-def extract_features(bands: list[float], dba: float) -> np.ndarray:
+def extract_features(
+    bands:    list[float],
+    dba:      float,
+    centroid: float | None = None,   # spectral centroid (Hz)  — from C engine
+    variance: float | None = None,   # temporal variance (dB²) — from C engine
+    zcr:      float | None = None,   # zero-crossing rate (Hz) — from C engine
+) -> np.ndarray:
     """
-    Convert raw octave-band levels + overall dBA into the 12-dim feature vector.
+    Convert raw octave-band levels + acoustic features into a 15-dim feature vector.
 
-    bands : list of 8 floats — octave-band dBA levels from the C/WASM engine
-    dba   : float            — overall A-weighted level
+    bands    : list of 8 floats — octave-band dBA levels from the C/WASM engine
+    dba      : float            — overall A-weighted level
+    centroid : Hz  — frequency centre of mass (low = bass-heavy, high = treble)
+    variance : dB² — temporal variance across 20 time chunks (low = steady)
+    zcr      : Hz  — zero-crossing rate (low = tonal, high = noisy)
 
-    Feature breakdown (12 total):
-      [0-7]  bands_norm  — normalised band shape, level-invariant
-      [8]    dba_norm    — absolute level cue (e.g. HVAC < 65 dBA)
-      [9]    low_ratio   — fraction of linear power in 63–250 Hz (bands 0-2)
-      [10]   mid_ratio   — fraction of linear power in 500 Hz–2 kHz (bands 3-5)
-      [11]   high_ratio  — fraction of linear power in 4–8 kHz (bands 6-7)
+    Feature breakdown (15 total):
+      [0-7]  bands_norm      — normalised band shape, level-invariant
+      [8]    dba_norm        — absolute level cue (e.g. HVAC < 65 dBA)
+      [9]    low_ratio       — linear power fraction at 63–250 Hz
+      [10]   mid_ratio       — linear power fraction at 500 Hz–2 kHz
+      [11]   high_ratio      — linear power fraction at 4–8 kHz
+      [12]   centroid_norm   — spectral centre of mass, normalised [0, 1]
+      [13]   variance_norm   — temporal steadiness, normalised [0, 1]
+      [14]   zcr_norm        — tonal vs noisy, normalised [0, 1]
 
-    The ratio features give the classifier a direct measure of spectral tilt that
-    the normalised shape alone cannot represent unambiguously. They are the key
-    separator between e.g. traffic (high low_ratio), voices (high mid_ratio),
-    and nature (bimodal: elevated low_ratio AND high_ratio).
-
-    Returns a (1, 12) ndarray ready for clf.predict().
+    centroid/variance/zcr default to band-derived or neutral values when not
+    supplied, so the function works even without the C engine (graceful fallback).
     """
     b = np.array(bands, dtype=float)
 
@@ -134,8 +158,22 @@ def extract_features(bands: list[float], dba: float) -> np.ndarray:
     mid_ratio  = linear[3:6].sum() / total   # 500, 1k, 2k Hz
     high_ratio = linear[6:8].sum() / total   # 4k, 8k Hz
 
+    # Spectral centroid — derive from band centres if not supplied by C engine
+    OCTAVE_CENTERS_HZ = np.array([63, 125, 250, 500, 1000, 2000, 4000, 8000], dtype=float)
+    if centroid is None or centroid <= 0:
+        centroid = float(np.dot(OCTAVE_CENTERS_HZ, linear) / (linear.sum() + 1e-30))
+    centroid_norm = float(np.clip((centroid - 80.0) / (8000.0 - 80.0), 0.0, 1.0))
+
+    # Temporal variance — 0.0 (unknown) maps to a neutral mid-range value
+    variance_norm = float(np.clip((variance or 0.0) / 80.0, 0.0, 1.0))
+
+    # Zero-crossing rate — 0.0 (unknown) maps to the low end (conservative)
+    zcr_norm = float(np.clip((zcr or 0.0) / 12000.0, 0.0, 1.0))
+
     return np.concatenate([
-        bands_norm, [dba_norm, low_ratio, mid_ratio, high_ratio]
+        bands_norm,
+        [dba_norm, low_ratio, mid_ratio, high_ratio,
+         centroid_norm, variance_norm, zcr_norm]
     ]).reshape(1, -1)
 
 
@@ -145,34 +183,51 @@ def _synthesise_dataset(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarra
     """
     Generate (X, y) training data from the spectral profile definitions.
 
-    band_dBA[i] = overall_dBA + 10 * log10(fraction[i])
-    then Gaussian noise (σ = 1.5 dB) is added per band to model real variation.
+    For each sample:
+      band_dBA[i] = overall_dBA + 10 * log10(fraction[i]) + Gaussian noise(σ=2 dB)
+      centroid    ~ Uniform(centroid_range) with ±10% Gaussian jitter
+      variance    ~ Uniform(variance_range) with ±15% Gaussian jitter
+      zcr         ~ Uniform(zcr_range)      with ±10% Gaussian jitter
     """
     X_parts, y_parts = [], []
 
     for label, cfg in _CLASSES.items():
         fracs = np.array(cfg["power_fractions"], dtype=float)
-        fracs /= fracs.sum()                          # ensure sums to 1
-        band_offsets = 10.0 * np.log10(fracs + 1e-30) # dB below overall Leq
+        fracs /= fracs.sum()
+        band_offsets = 10.0 * np.log10(fracs + 1e-30)
 
-        lo, hi = cfg["dba_range"]
+        lo_dba, hi_dba = cfg["dba_range"]
+        lo_c,   hi_c   = cfg["centroid_range"]
+        lo_v,   hi_v   = cfg["variance_range"]
+        lo_z,   hi_z   = cfg["zcr_range"]
         n = cfg["n_samples"]
 
-        dba_vals = rng.uniform(lo, hi, size=n)
+        dba_vals      = rng.uniform(lo_dba, hi_dba, size=n)
+        centroid_vals = rng.uniform(lo_c,   hi_c,   size=n)
+        variance_vals = rng.uniform(lo_v,   hi_v,   size=n)
+        zcr_vals      = rng.uniform(lo_z,   hi_z,   size=n)
 
-        for dba in dba_vals:
-            # Band levels + realistic measurement noise (σ=2 dB models phone mic variation)
+        # Add realistic jitter to acoustic features
+        centroid_vals *= 1.0 + rng.normal(0.0, 0.10, size=n)
+        variance_vals *= 1.0 + rng.normal(0.0, 0.15, size=n)
+        zcr_vals      *= 1.0 + rng.normal(0.0, 0.10, size=n)
+
+        for i, dba in enumerate(dba_vals):
             noise = rng.normal(0.0, 2.0, size=8)
             bands = dba + band_offsets + noise
 
-            feats = extract_features(bands.tolist(), float(dba))
+            feats = extract_features(
+                bands.tolist(), float(dba),
+                centroid=float(np.clip(centroid_vals[i], 20, 20000)),
+                variance=float(np.clip(variance_vals[i], 0, 200)),
+                zcr=float(np.clip(zcr_vals[i], 0, 24000)),
+            )
             X_parts.append(feats[0])
             y_parts.append(label)
 
     X = np.array(X_parts)
     y = np.array(y_parts)
 
-    # Shuffle
     idx = rng.permutation(len(y))
     return X[idx], y[idx]
 
@@ -203,24 +258,39 @@ _clf, _le = _train()
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def classify(bands: list[float], dba: float) -> str:
+def classify(
+    bands:    list[float],
+    dba:      float,
+    centroid: float | None = None,
+    variance: float | None = None,
+    zcr:      float | None = None,
+) -> str:
     """
-    Predict the dominant noise source from octave-band levels + overall dBA.
+    Predict the dominant noise source.
 
-    bands : 8-element list from the WASM get_octave_bands() call
-    dba   : overall A-weighted level from process_audio()
+    bands    : 8-element list from WASM get_octave_bands()
+    dba      : overall A-weighted level from process_audio()
+    centroid : spectral centroid (Hz) from get_spectral_centroid()
+    variance : temporal variance (dB²) from get_temporal_variance()
+    zcr      : zero-crossing rate (Hz) from get_zero_crossing_rate()
 
-    Returns one of: 'traffic', 'voices', 'construction', 'nature', 'music', 'hvac'
+    Returns one of: 'traffic', 'voices', 'construction', 'nature', 'music', 'hvac', 'ambient'
     """
     if not bands or len(bands) != 8:
         return "unknown"
 
-    feats = extract_features(bands, dba)
+    feats = extract_features(bands, dba, centroid, variance, zcr)
     pred  = _clf.predict(feats)[0]
     return str(_le.inverse_transform([pred])[0])
 
 
-def classify_with_confidence(bands: list[float], dba: float) -> dict:
+def classify_with_confidence(
+    bands:    list[float],
+    dba:      float,
+    centroid: float | None = None,
+    variance: float | None = None,
+    zcr:      float | None = None,
+) -> dict:
     """
     Like classify(), but also returns per-class probabilities.
     Useful for the API response / debugging.
@@ -228,7 +298,7 @@ def classify_with_confidence(bands: list[float], dba: float) -> dict:
     if not bands or len(bands) != 8:
         return {"label": "unknown", "confidence": 0.0, "probabilities": {}}
 
-    feats  = extract_features(bands, dba)
+    feats  = extract_features(bands, dba, centroid, variance, zcr)
     probs  = _clf.predict_proba(feats)[0]
     labels = list(_le.classes_)
 

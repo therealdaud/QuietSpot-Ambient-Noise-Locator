@@ -206,3 +206,99 @@ float calculate_leq(float *samples, int num_samples, int sample_rate) {
     if (!samples || num_samples < 1) return 20.0f;
     return clamp_dba(rms_dba(samples, num_samples));
 }
+
+
+/*
+ * get_spectral_centroid — frequency centre of mass of the spectrum (Hz)
+ *
+ * Uses magnitude (not power) weighting so the result is proportional to
+ * the perceptual "brightness" of the sound.  Low value = bass-heavy,
+ * high value = treble-heavy.
+ */
+float get_spectral_centroid(float *samples, int num_samples, int sample_rate) {
+    if (!samples || num_samples < 2) return 0.0f;
+
+    size_t  fft_size;
+    double *buf = make_fft(samples, num_samples, &fft_size);
+    if (!buf) return 0.0f;
+
+    double freq_res      = (double)sample_rate / (double)fft_size;
+    double sum_mag       = 0.0;
+    double sum_freq_mag  = 0.0;
+
+    for (size_t k = 1; k < fft_size / 2; k++) {
+        double f   = (double)k * freq_res;
+        double mag = bin_mag(buf, k, fft_size);
+        sum_mag      += mag;
+        sum_freq_mag += f * mag;
+    }
+
+    free(buf);
+
+    if (sum_mag < 1e-30) return 0.0f;
+
+    double centroid = sum_freq_mag / sum_mag;
+    if (centroid < 20.0)                    centroid = 20.0;
+    if (centroid > (double)sample_rate / 2) centroid = (double)sample_rate / 2;
+    return (float)centroid;
+}
+
+
+/*
+ * get_temporal_variance — variance of per-chunk RMS dBA levels (dB²)
+ *
+ * Splits the full buffer into N_CHUNKS equal segments, computes RMS dBA
+ * for each, then returns the variance of those values.
+ *
+ * Near-zero → steady source (HVAC, continuous traffic hum)
+ * High      → intermittent / impulsive source (construction, voices)
+ */
+#define N_TEMPORAL_CHUNKS 20
+
+float get_temporal_variance(float *samples, int num_samples, int sample_rate) {
+    (void)sample_rate;
+    if (!samples || num_samples < N_TEMPORAL_CHUNKS * 2) return 0.0f;
+
+    int    chunk_size = num_samples / N_TEMPORAL_CHUNKS;
+    double chunk_dba[N_TEMPORAL_CHUNKS];
+    double mean = 0.0;
+
+    for (int c = 0; c < N_TEMPORAL_CHUNKS; c++) {
+        chunk_dba[c] = rms_dba(samples + c * chunk_size, chunk_size);
+        mean += chunk_dba[c];
+    }
+    mean /= N_TEMPORAL_CHUNKS;
+
+    double var = 0.0;
+    for (int c = 0; c < N_TEMPORAL_CHUNKS; c++) {
+        double d = chunk_dba[c] - mean;
+        var += d * d;
+    }
+    var /= N_TEMPORAL_CHUNKS;
+
+    return (float)var;
+}
+
+
+/*
+ * get_zero_crossing_rate — zero crossings per second (Hz)
+ *
+ * A sign change is counted whenever consecutive samples have opposite sign
+ * (zero is treated as positive).  Returned in crossings/second so the value
+ * is independent of recording length.
+ *
+ * Low  → tonal / periodic (HVAC hum, sustained note)
+ * High → noisy / broadband (saws, wind, unvoiced fricatives)
+ */
+float get_zero_crossing_rate(float *samples, int num_samples, int sample_rate) {
+    if (!samples || num_samples < 2 || sample_rate < 1) return 0.0f;
+
+    int crossings = 0;
+    for (int i = 1; i < num_samples; i++) {
+        if ((samples[i] >= 0.0f) != (samples[i - 1] >= 0.0f))
+            crossings++;
+    }
+
+    double duration = (double)num_samples / (double)sample_rate;
+    return (float)(crossings / duration);
+}

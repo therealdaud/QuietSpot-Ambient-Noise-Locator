@@ -37,4 +37,33 @@ EXPORT void get_octave_bands(float *samples, int num_samples,
  */
 EXPORT float calculate_leq(float *samples, int num_samples, int sample_rate);
 
+/*
+ * get_spectral_centroid
+ *   Frequency-weighted centre of mass of the spectrum (Hz).
+ *   centroid = Σ(freq[k] * mag[k]) / Σ(mag[k])
+ *
+ *   Low value  → bass-heavy source (traffic, HVAC)
+ *   High value → treble-heavy source (birds, sibilant speech)
+ *   Mid value  → speech, music
+ */
+EXPORT float get_spectral_centroid(float *samples, int num_samples, int sample_rate);
+
+/*
+ * get_temporal_variance
+ *   Variance of per-chunk RMS dBA levels across 20 equal time segments (dB²).
+ *
+ *   Near-zero → steady drone (HVAC, continuous traffic)
+ *   High      → intermittent or impulsive source (construction, voices)
+ */
+EXPORT float get_temporal_variance(float *samples, int num_samples, int sample_rate);
+
+/*
+ * get_zero_crossing_rate
+ *   Rate at which the waveform crosses zero (crossings per second).
+ *
+ *   Low  → tonal/periodic signal (HVAC hum, pure tone)
+ *   High → noisy/broadband signal (saws, sibilants, wind)
+ */
+EXPORT float get_zero_crossing_rate(float *samples, int num_samples, int sample_rate);
+
 #endif

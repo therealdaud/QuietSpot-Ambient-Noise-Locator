@@ -167,7 +167,12 @@ def classify_noise(payload: NoiseCreate):
     """
     if not payload.bands or len(payload.bands) != 8:
         return {"ok": True, "label": None, "confidence": 0.0, "probabilities": {}}
-    result = classify_with_confidence(payload.bands, payload.dBA)
+    result = classify_with_confidence(
+        payload.bands, payload.dBA,
+        centroid=payload.centroid,
+        variance=payload.variance,
+        zcr=payload.zcr,
+    )
     return {"ok": True, **result}
 
 
@@ -178,7 +183,12 @@ def post_noise(payload: NoiseCreate, db: Session = Depends(get_db)):
 
     # ML classification — requires octave bands from the WASM engine
     classification = (
-        classify_with_confidence(payload.bands, payload.dBA)
+        classify_with_confidence(
+            payload.bands, payload.dBA,
+            centroid=payload.centroid,
+            variance=payload.variance,
+            zcr=payload.zcr,
+        )
         if payload.bands and len(payload.bands) == 8
         else {"label": None, "confidence": 0.0, "probabilities": {}}
     )

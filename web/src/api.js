@@ -15,14 +15,20 @@ export async function fetchSpot(key) {
   return data.spot;
 }
 
-export async function classifyNoise({ dBA, bands }) {
+export async function classifyNoise({ dBA, bands, centroid, variance, zcr }) {
   const res = await fetch(`${BASE}/classify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lat: 0, lng: 0, dBA, bands: bands ?? null }),
+    body: JSON.stringify({
+      lat: 0, lng: 0, dBA,
+      bands:    bands    ?? null,
+      centroid: centroid ?? null,
+      variance: variance ?? null,
+      zcr:      zcr      ?? null,
+    }),
   });
   const data = await res.json();
-  return data.label ?? null;   // e.g. 'traffic', 'voices', null if unavailable
+  return data.label ?? null;   // e.g. 'traffic', 'voices', 'ambient', null
 }
 
 export async function postNoise({ lat, lng, dBA, note, bands }) {
